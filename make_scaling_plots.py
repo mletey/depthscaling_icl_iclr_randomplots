@@ -8,6 +8,7 @@ sns.set_style("whitegrid")
 sns.set_palette("rocket", n_colors=10)
 
 experiment = input("experiment: ")
+parent = input("parent: ")
 T = int(input("T: "))
 theoryline = int(input("theory line? "))
 
@@ -22,7 +23,7 @@ for i in range(len(Lvals)):
   # values = data.strip("[]").split()
   # values = [float(v) for v in values]
   # all_loss.append(values)
-  with open(f"outputs/{experiment}/output_{i}.txt", "r") as f:
+  with open(f"{parent}/{experiment}/output_{i}.txt", "r") as f:
     data = f.read()
     all_loss.append(ast.literal_eval(data))
 

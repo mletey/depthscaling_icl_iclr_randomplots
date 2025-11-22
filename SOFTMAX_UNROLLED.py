@@ -11,38 +11,18 @@ import optax
 
 print("imports done", flush=True)
 
-
 def init_params_tr_layers(d, N, L, sigma=0.4, key=None):
-    """
-    Initialize parameters for L layers.
-
-    Each layer l has its own (W_x^l, Wq^l, Wk^l, Wv^l).
-    Returns:
-        params_tr_layers: list of length L with tuples (W_x, Wq, Wk, Wv)
-        Wy: readout vector (N,)
-    """
     # Base template
     W_x_base = jnp.sqrt(2.0) * jnp.sqrt(N) * sigma * jnp.eye(N, d)  # shape (N,d)
     Wq_base  = sigma * jnp.eye(N) * jnp.sqrt(N)
     Wk_base  = 1.0 * Wq_base
     Wv_base  = sigma * jnp.eye(N) * jnp.sqrt(N)
     Wy       = jnp.ones(N)
-
     params_tr_layers = [(W_x_base, Wq_base, Wk_base, Wv_base) for _ in range(L)]
-
     return params_tr_layers, Wy
     
 
 def init_params_tr_layers_MLP(d, N, L, sigma=0.4, key=None):
-    """
-    Initialize parameters for L layers.
-
-    Each layer l has its own (W_x^l, Wq^l, Wk^l, Wv^l, W_mlp1^l, W_mlp2^l).
-    Returns:
-        params_tr_layers: list of length L with tuples (W_x, Wq, Wk, Wv, W_mlp1, W_mlp2)
-        Wy: readout vector (N,)
-    """
-    # Base templates
     W_x_base   = jnp.sqrt(2.0) * jnp.sqrt(N) * sigma * jnp.eye(N, d)  # (N,d)
     Wq_base    = sigma * jnp.eye(N) * jnp.sqrt(N)
     Wk_base    = 1.0   * Wq_base
@@ -50,38 +30,49 @@ def init_params_tr_layers_MLP(d, N, L, sigma=0.4, key=None):
     W_mlp1_base= sigma * jnp.eye(N)                                   # (N,N)
     W_mlp2_base= sigma * jnp.eye(N)                                   # (N,N)
     Wy         = jnp.ones(N)
-
-    params_tr_layers = []
-    if key is not None:
-        keys = jr.split(key, L * 6)
-        for l in range(L):
-            W_x    = W_x_base    + 0.01 * jr.normal(keys[6*l+0], (N, d))
-            Wq     = Wq_base     + 0.01 * jr.normal(keys[6*l+1], (N, N))
-            Wk     = Wk_base     + 0.01 * jr.normal(keys[6*l+2], (N, N))
-            Wv     = Wv_base     + 0.01 * jr.normal(keys[6*l+3], (N, N))
-            W_mlp1 = W_mlp1_base + 0.01 * jr.normal(keys[6*l+4], (N, N))
-            W_mlp2 = W_mlp2_base + 0.01 * jr.normal(keys[6*l+5], (N, N))
-            params_tr_layers.append((W_x, Wq, Wk, Wv, W_mlp1, W_mlp2))
-    else:
-        params_tr_layers = [
+    params_tr_layers = [
             (W_x_base, Wq_base, Wk_base, Wv_base, W_mlp1_base, W_mlp2_base)
             for _ in range(L)
         ]
-
     return params_tr_layers, Wy
 
-# -------------------------------
-# Unrolled model with softmax attn
-# -------------------------------
+def init_params_tr_layers_MHA(d, N, L, n_heads, sigma=0.4, key=None):
+    assert N % n_heads == 0, "N must be divisible by n_heads"
+    W_x_base    = jnp.sqrt(2.0) * jnp.sqrt(N) * sigma * jnp.eye(N, d)  # (N,d)
+    Wq_base     = sigma * jnp.eye(N) * jnp.sqrt(N)   # (N,N)
+    Wk_base     = 1.0   * Wq_base                    # (N,N)
+    Wv_base     = sigma * jnp.eye(N) * jnp.sqrt(N)   # (N,N)
+    Wo_base     = sigma * jnp.eye(N)                 # (N,N)
+    Wy          = jnp.ones(N)
+    params_tr_layers = [
+        (W_x_base, Wq_base, Wk_base, Wv_base, Wo_base)
+        for _ in range(L)
+    ]
+    return params_tr_layers, Wy
+
+def init_params_tr_layers_MLP_MHA(d, N, L, n_heads, sigma=0.4, key=None):
+    assert N % n_heads == 0, "N must be divisible by n_heads"
+    W_x_base    = jnp.sqrt(2.0) * jnp.sqrt(N) * sigma * jnp.eye(N, d)  # (N,d)
+    Wq_base     = sigma * jnp.eye(N) * jnp.sqrt(N)   # (N,N)
+    Wk_base     = 1.0   * Wq_base                    # (N,N)
+    Wv_base     = sigma * jnp.eye(N) * jnp.sqrt(N)   # (N,N)
+    Wo_base     = sigma * jnp.eye(N)                 # (N,N)
+    W_mlp1_base = sigma * jnp.eye(N)                 # (N,N)
+    W_mlp2_base = sigma * jnp.eye(N)                 # (N,N)
+    Wy          = jnp.ones(N)
+    params_tr_layers = [
+        (W_x_base, Wq_base, Wk_base, Wv_base, Wo_base, W_mlp1_base, W_mlp2_base)
+        for _ in range(L)
+    ]
+    return params_tr_layers, Wy
+
 def model_eval_decoupled_unrolled(
     params_tr_layers,  # list of length L: [(W_x^l, Wq^l, Wk^l, Wv^l), ...]
     Wy,                # (N,)
     X,                 # (B, P, d)
     y,                 # (B, P)
     P_test=1,
-    beta=100.0,
-    qk_ln=False,
-    norm_inputs=False
+    beta=100.0
 ):
     L = len(params_tr_layers)
     W_x0, _, _, _ = params_tr_layers[0]
@@ -175,6 +166,149 @@ def model_eval_decoupled_unrolled_WITHMLP(
 
     out = jnp.einsum('ijk,k->ij', hy, Wy) / N
     return out, [], []
+
+def model_eval_decoupled_unrolled_MHA_only(
+    params_tr_layers,   # list of (W_x, Wq, Wk, Wv, Wo)
+    Wy,                 # (N,)
+    X,                  # (B,P,d)
+    y,                  # (B,P)
+    *,
+    n_heads: int,
+    P_test=1,
+    beta=100.0,
+    qk_ln=False,        # kept for API compatibility (unused)
+    norm_inputs=False   # kept for API compatibility (unused)
+):
+    L = len(params_tr_layers)
+    W_x0, *_ = params_tr_layers[0]
+    N, d = W_x0.shape
+    assert N % n_heads == 0
+    Dh = N // n_heads
+
+    B = y.shape[0]
+    P = X.shape[1]
+    P_tr = P - P_test
+
+    # teacher-like signal construction (unchanged)
+    mask_y = jnp.ones_like(y)
+    mask_y = mask_y.at[:, P_tr:].set(0.0)
+    hy = jnp.einsum('ij,k->ijk', y * mask_y, Wy)  # (B,P,N)
+
+    # same train/test mask
+    mask = jnp.ones((P, P))
+    mask = mask.at[:, P_tr:].set(0.0)
+    neg_inf = jnp.array(-1e9, dtype=hy.dtype)
+    attn_mask = (1.0 - mask)[None, None, :, :] * neg_inf  # (1,1,P,P)
+
+    for l in range(L):
+        W_x, Wq, Wk, Wv, Wo = params_tr_layers[l]
+
+        # input projection
+        hx = jnp.einsum('ijk,lk->ijl', X, W_x)  # (B,P,N)
+
+        # Q, K from hx; V from hy (matches your previous design)
+        q = jnp.einsum('ijk,lk->ijl', hx, Wq) / jnp.sqrt(N)  # (B,P,N)
+        k = jnp.einsum('ijk,lk->ijl', hx, Wk) / jnp.sqrt(N)  # (B,P,N)
+        v = jnp.einsum('ijk,lk->ijl', hy, Wv) / jnp.sqrt(N)  # (B,P,N)
+
+        # split into heads: (B,P,N) -> (B,H,P,Dh)
+        def split_heads(t):
+            return t.reshape(B, P, n_heads, Dh).transpose(0, 2, 1, 3)
+        qh, kh, vh = map(split_heads, (q, k, v))  # (B,H,P,Dh)
+
+        # attention
+        att_logits = jnp.einsum('bhip,bhjp->bhij', qh, kh) / jnp.sqrt(Dh)  # (B,H,P,P)
+        att_logits = att_logits + attn_mask
+        A = softmax(att_logits, axis=-1)  # (B,H,P,P)
+
+        # context per head -> merge heads
+        ctx_h = jnp.einsum('bhij,bhjp->bhip', A, vh)           # (B,H,P,Dh)
+        ctx   = ctx_h.transpose(0, 2, 1, 3).reshape(B, P, N)   # (B,P,N)
+
+        # output projection and your descent-style update
+        mha_out = jnp.einsum('bpn,ln->bpl', ctx, Wo)           # (B,P,N)
+        hy = hy - (beta / L) * mha_out
+
+    out = jnp.einsum('ijk,k->ij', hy, Wy) / N
+    return out, [], []
+
+def model_eval_decoupled_unrolled_WITHMLP_MHA(
+    params_tr_layers,     # list of tuples including Wo now
+    Wy,                   # (N,)
+    X,                    # (B,P,d)
+    y,                    # (B,P)
+    *,
+    n_heads: int,         # NEW
+    P_test=1,
+    beta=100.0,
+    qk_ln=False,          # kept for API compatibility (unused here)
+    norm_inputs=False     # kept for API compatibility (unused here)
+):
+    L = len(params_tr_layers)
+    W_x0, *_ = params_tr_layers[0]
+    N, d = W_x0.shape
+    assert N % n_heads == 0
+    Dh = N // n_heads
+
+    B = y.shape[0]
+    P = X.shape[1]
+    P_tr = P - P_test
+
+    # your teacher-signal “hy” construction
+    mask_y = jnp.ones_like(y)
+    mask_y = mask_y.at[:, P_tr:].set(0.0)
+    hy = jnp.einsum('ij,k->ijk', y * mask_y, Wy)  # (B,P,N)
+
+    # same train/test attention mask
+    mask = jnp.ones((P, P))
+    mask = mask.at[:, P_tr:].set(0.0)
+    neg_inf = jnp.array(-1e9, dtype=hy.dtype)
+    attn_mask = (1.0 - mask)[None, None, :, :] * neg_inf  # (1,1,P,P)
+
+    for l in range(L):
+        W_x, Wq, Wk, Wv, Wo, W_mlp1, W_mlp2 = params_tr_layers[l]
+
+        # Input projection (unchanged)
+        hx = jnp.einsum('ijk,lk->ijl', X, W_x)  # (B,P,N)
+
+        # ---- Multi-Head Attention ----
+        # your original scalings:
+        q = jnp.einsum('ijk,lk->ijl', hx, Wq) / jnp.sqrt(N)     # (B,P,N)
+        k = jnp.einsum('ijk,lk->ijl', hx, Wk) / jnp.sqrt(N)     # (B,P,N)
+        v = jnp.einsum('ijk,lk->ijl', hy, Wv) / jnp.sqrt(N)     # (B,P,N)
+
+        # reshape into heads: (B,P,N) -> (B,H,P,Dh) -> (B,H,P,Dh)
+        def split_heads(t):
+            return t.reshape(B, P, n_heads, Dh).transpose(0, 2, 1, 3)  # (B,H,P,Dh)
+
+        qh, kh, vh = map(split_heads, (q, k, v))  # each (B,H,P,Dh)
+
+        # attention scores: (B,H,P,P)
+        # (i = query pos, j = key pos)
+        att_logits = jnp.einsum('bhip,bhjp->bhij', qh, kh) / jnp.sqrt(Dh)
+
+        # add mask (broadcast over batch & heads)
+        att_logits = att_logits + attn_mask
+
+        A = softmax(att_logits, axis=-1)  # (B,H,P,P)
+
+        # context per head -> merge heads back to (B,P,N)
+        ctx_h = jnp.einsum('bhij,bhjp->bhip', A, vh)           # (B,H,P,Dh)
+        ctx = ctx_h.transpose(0, 2, 1, 3).reshape(B, P, N)     # (B,P,N)
+
+        # output projection (merge heads)
+        mha_out = jnp.einsum('bpn,ln->bpl', ctx, Wo)           # (B,P,N)
+
+        # your training-style residual *descent* update
+        hy = hy - (beta / L) * mha_out
+
+        # ---- Two-layer MLP on channels (unchanged) ----
+        h_hidden = gelu(jnp.einsum('ijk,lk->ijl', hy, W_mlp1)) / jnp.sqrt(N)  # (B,P,N)
+        hy       = hy - (beta / L) * jnp.einsum('ijk,lk->ijl', h_hidden, W_mlp2) / jnp.sqrt(N)
+
+    out = jnp.einsum('ijk,k->ij', hy, Wy) / N
+    return out, [], []
+
 # ---------------------------------
 # Training function (Optax AdamW)
 # ---------------------------------
@@ -184,12 +318,21 @@ def train_model(
     data_params,            # (d, P_tr, P_test, B)
     model_params,           # (N, L, beta, gamma)
     opt_params,             # (T, lr, lamb)
+    model_type,
+    n_heads=0
 ):
     d, P_tr, P_test, B = data_params
     N, L, beta, gamma = model_params
     T, lr, weight_decay = opt_params
 
-    nonwy, Wy = init_params_tr_layers(d, N, L, sigma=0.4, key=None)
+    if model_type == 0:
+        nonwy, Wy = init_params_tr_layers(d, N, L, sigma=0.4, key=None)
+    elif model_type == 1:
+        nonwy, Wy = init_params_tr_layers_MLP(d, N, L, sigma=0.4, key=None)
+    elif model_type == 2:
+        nonwy, Wy = init_params_tr_layers_MHA(d, N, L, n_heads=n_heads, sigma=0.4, key=None)
+    elif model_type == 3:
+        nonwy, Wy = init_params_tr_layers_MLP_MHA(d, N, L, n_heads=n_heads, sigma=0.4, key=None)
 
     # Pack params
     params = {
@@ -198,31 +341,81 @@ def train_model(
     }
 
     # ---------- loss ----------
-    def loss_fn(params, X, y):
-        out, _, _ = model_eval_decoupled_unrolled(
-            params["layers"], params["Wy"], X, y,
-            P_test=P_test, beta=beta, qk_ln=False
-        )
-        pred_test   = out[:, P_tr:] / gamma
-        target_test = y[:, P_tr:]
-        return jnp.mean((pred_test + target_test) ** 2)
+    if model_type == 0:
+        def loss_fn(params, X, y):
+            out, _, _ = model_eval_decoupled_unrolled(
+                params["layers"], params["Wy"], X, y,
+                P_test=P_test, beta=beta, qk_ln=False
+            )
+            pred_test   = out[:, P_tr:] / gamma
+            target_test = y[:, P_tr:]
+            return jnp.mean((pred_test + target_test) ** 2)
+    elif model_type == 1:
+        def loss_fn(params, X, y):
+            out, _, _ = model_eval_decoupled_unrolled_WITHMLP(
+                params["layers"], params["Wy"], X, y,
+                P_test=P_test, beta=beta, qk_ln=False
+            )
+            pred_test   = out[:, P_tr:] / gamma
+            target_test = y[:, P_tr:]
+            return jnp.mean((pred_test + target_test) ** 2)
+    elif model_type == 2:
+        def loss_fn(params, X, y):
+            out, _, _ = model_eval_decoupled_unrolled_MHA_only(
+                params["layers"], params["Wy"], X, y,
+                n_heads=n_heads, P_test=P_test, beta=beta, qk_ln=False
+            )
+            pred_test   = out[:, P_tr:] / gamma
+            target_test = y[:, P_tr:]
+            return jnp.mean((pred_test + target_test) ** 2)
+    elif model_type == 3:
+        def loss_fn(params, X, y):
+            out, _, _ = model_eval_decoupled_unrolled_WITHMLP_MHA(
+                params["layers"], params["Wy"], X, y,
+                n_heads=n_heads, P_test=P_test, beta=beta, qk_ln=False
+            )
+            pred_test   = out[:, P_tr:] / gamma
+            target_test = y[:, P_tr:]
+            return jnp.mean((pred_test + target_test) ** 2)
 
-    # ---------- optimizer with per-parameter LR ----------
-    # Two transforms: "base" (lr), "attn" (lr * L)
-    transforms = {
-        "base": optax.adamw(learning_rate=lr,     weight_decay=weight_decay),
-        "attn": optax.adamw(learning_rate=lr, weight_decay=weight_decay),
-        # "mlp": optax.adamw(learning_rate=lr, weight_decay=weight_decay),
-    }
-
-    # Build a labels pytree that mirrors params' structure:
-    # - For each layer tuple (W_x, Wq, Wk, Wv) => ("base","attn","attn","attn")
-    # - Wy => "base"
-    labels = {
-        #"layers": [("base", "attn", "attn", "attn", "mlp", "mlp")] * len(params["layers"]),
-        "layers": [("base", "attn", "attn", "attn")] * len(params["layers"]),
-        "Wy": "base",
-    }
+    if model_type == 0:
+        transforms = {
+            "base": optax.adamw(learning_rate=lr,     weight_decay=weight_decay),
+            "attn": optax.adamw(learning_rate=lr, weight_decay=weight_decay),
+        }
+        labels = {
+            "layers": [("base", "attn", "attn", "attn")] * len(params["layers"]),
+            "Wy": "base",
+        }
+    elif model_type == 1:
+        transforms = {
+            "base": optax.adamw(learning_rate=lr,     weight_decay=weight_decay),
+            "attn": optax.adamw(learning_rate=lr, weight_decay=weight_decay),
+            "mlp": optax.adamw(learning_rate=lr, weight_decay=weight_decay),
+        }
+        labels = {
+            "layers": [("base", "attn", "attn", "attn", "mlp", "mlp")] * len(params["layers"]),
+            "Wy": "base",
+        }
+    elif model_type == 2:
+        transforms = {
+            "base": optax.adamw(learning_rate=lr,     weight_decay=weight_decay),
+            "attn": optax.adamw(learning_rate=lr/n_heads, weight_decay=weight_decay),
+        }
+        labels = {
+            "layers": [("base","attn","attn","attn","attn")] * len(params["layers"]),
+            "Wy": "base",
+        }
+    elif model_type == 3:
+        transforms = {
+            "base": optax.adamw(learning_rate=lr, weight_decay=weight_decay),
+            "attn": optax.adamw(learning_rate=lr/n_heads, weight_decay=weight_decay),
+            "mlp":  optax.adamw(learning_rate=lr, weight_decay=weight_decay),
+        }
+        labels = {
+            "layers": [("base","attn","attn","attn","attn","mlp",  "mlp")] * len(params["layers"]),
+            "Wy": "base",
+        }
 
     tx = optax.multi_transform(transforms, labels)
     opt_state = tx.init(params)
@@ -261,26 +454,6 @@ def draw_pretraining_data(B, P_tr, P_te, rho, C):
     y = np.einsum('nij,nj->ni', x, w_set) + epsilon
     return x, y 
 
-# d = int(sys.argv[1])
-# P_tr = int(sys.argv[2])
-# P_test = int(sys.argv[3])
-# B = int(sys.argv[4])
-# T = int(sys.argv[5])
-# lr = float(sys.argv[6])
-# lamb = float(sys.argv[7])
-# alpha = float(sys.argv[8])
-# spec = jnp.linspace(1,d,d)**(- alpha)
-# beta = float(sys.argv[9])
-# w_star = jnp.sqrt( jnp.linspace(1, d, d)**(-alpha*beta-1.0) / spec )
-# w_star = w_star / jnp.sqrt( jnp.sum( w_star**2 * spec ) )
-# beta_model = float(sys.argv[10])
-# data_params = [d, P_tr, P_test, B]
-# opt_params = [T, lr, lamb]
-# gamma = float(sys.argv[11])
-# L = int(sys.argv[12])
-# N = int(sys.argv[13])
-# model_params = [ N, L, beta_model, gamma ]
-
 mydir = sys.argv[1]
 
 B = 512
@@ -295,6 +468,9 @@ gamma = 1.0
 lamb = 0.000000000000001
 T = int(sys.argv[3])
 lr = float(sys.argv[4])
+model_type = int(sys.argv[5])
+number_of_heads = 8
+train_power = float(sys.argv[6])
 d = 64
 P_tr = 128
 P_test = 16
@@ -309,10 +485,12 @@ model_params = [ N, L, beta_model, gamma ]
 
 print("parameters done", flush=True)
 
-X, y = draw_pretraining_data(B, P_tr, P_test, 0.01, np.eye(d)) #sample_data_spec_rotate(spec, w_star, B, P_tr, P_test, seed = 64)
+C = np.diag(np.array([(j + 1) ** -train_power for j in range(d)]))
+X, y = draw_pretraining_data(B, P_tr, P_test, 0.01, C) #
+#X, y = sample_data_spec_rotate(spec, w_star, B, P_tr, P_test, seed = 64)
 print("sampling done", flush=True)
 
-_, losses = train_model(X,y,data_params, model_params, opt_params)
+_, losses = train_model(X,y, data_params, model_params, opt_params, model_type, number_of_heads)
 print("training done", flush=True)
 
 with open(f"{mydir}/output_{layerindex}.txt", "w") as f:
